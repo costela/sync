@@ -131,6 +131,34 @@ func (g *Group) DoChan(key string, fn func() (interface{}, error)) <-chan Result
 	return ch
 }
 
+// inspired by https://github.com/golang/sync/pull/9#issuecomment-572705800
+// `single` is executed only once per key and `all` is executed once per caller,
+func (g *Group) DoShared(key string, single func() (interface{}, error), all func(interface{})) (v interface{}, err error) {
+	g.mu.Lock()
+	if g.m == nil {
+		g.m = make(map[string]*call)
+	}
+	if c, ok := g.m[key]; ok {
+		c.dups++
+		g.mu.Unlock()
+		c.wg.Wait()
+
+		if e, ok := c.err.(*panicError); ok {
+			panic(e)
+		} else if c.err == errGoexit {
+			runtime.Goexit()
+		}
+		return c.val, c.err
+	}
+	c := new(call)
+	c.wg.Add(1)
+	g.m[key] = c
+	g.mu.Unlock()
+
+	g.doCall(c, key, single)
+	return c.val, c.err
+}
+
 // doCall handles the single call for a key.
 func (g *Group) doCall(c *call, key string, fn func() (interface{}, error)) {
 	normalReturn := false
